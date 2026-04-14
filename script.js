@@ -299,7 +299,7 @@ function renderTiers() {
 
   const grid = document.getElementById('tier-grid');
   grid.innerHTML = tiers.map((t, i) => `
-    <div class="tier-card${t.recommended ? ' recommended' : ''}" id="tier-${t.id}" onclick="selectTier('${t.id}', this)" style="animation-delay:${i*0.06}s">
+    <div class="tier-card${t.recommended ? ' recommended' : ''}${t.tag === 'ULTIMATE' ? ' tier-ultimate' : ''}${t.id.includes('-ga') ? ' tier-ga' : ''}" id="tier-${t.id}" onclick="selectTier('${t.id}', this)" style="animation-delay:${i*0.06}s">
       <div class="tier-card-header">
         ${t.tag ? `<span class="tier-badge${t.id.includes('allaccess') ? ' gold' : t.tag === 'ULTIMATE' ? ' ultimate' : ''}">${t.tag}</span>` : '<span></span>'}
         <div class="tier-name">${t.name}</div>
@@ -490,26 +490,43 @@ function setDiscountTab(type, el) {
   document.getElementById('discount-' + type).classList.add('show');
 }
 
-function applyStudentDiscount() {
+async function applyStudentDiscount() {
   const email = document.getElementById('student-email').value.trim();
   const status = document.getElementById('student-status');
   if (!email.toLowerCase().endsWith('.edu')) {
     status.className = 'discount-status error';
-    status.textContent = '✗ Please use a valid .edu email address to verify student status.';
+    status.textContent = '✗ Please use a valid .edu email address.';
     return;
   }
-  state.discount = DISCOUNTS.student.label;
-  state.discountPct = DISCOUNTS.student.pct;
-  status.className = 'discount-status success';
-  status.textContent = '✓ Student discount applied — 10% off your order.';
-  updateOrderSummary();
+  status.className = 'discount-status info';
+  status.textContent = 'Sending verification email...';
+  status.style.display = 'block';
+  status.style.color = 'var(--text2)';
+  try {
+    const res = await fetch('/api/verify-student', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      status.className = 'discount-status success';
+      status.textContent = '✓ Check your inbox — click the link to verify and unlock 10% off.';
+    } else {
+      status.className = 'discount-status error';
+      status.textContent = '✗ ' + (data.error || 'Could not send email. Try again.');
+    }
+  } catch {
+    status.className = 'discount-status error';
+    status.textContent = '✗ Network error. Please try again.';
+  }
 }
 
 function applySidebarDiscount() {
   const val = document.getElementById('sidebar-discount-input').value.trim();
   const status = document.getElementById('sidebar-discount-status');
   if (val.toLowerCase().endsWith('.edu')) {
-    state.discount = 'Student Discount (15%)';
+    state.discount = 'Student Discount (10%)';
     state.discountPct = 0.15;
     status.className = 'discount-status success';
     status.textContent = '✓ Student discount applied — 10% off.';
@@ -526,18 +543,37 @@ function applySidebarDiscount() {
   }
 }
 
-function applyMilitaryDiscount() {
-  const code = document.getElementById('military-code').value.trim().toUpperCase();
+async function applyMilitaryDiscount() {
+  const code = document.getElementById('military-code').value.trim();
   const status = document.getElementById('military-status');
-  if (DISCOUNTS.military.codes.includes(code)) {
-    state.discount = DISCOUNTS.military.label;
-    state.discountPct = DISCOUNTS.military.pct;
-    status.className = 'discount-status success';
-    status.textContent = '✓ Military discount applied — 10% off your order.';
-    updateOrderSummary();
-  } else {
+  if (!code) {
     status.className = 'discount-status error';
-    status.textContent = '✗ Invalid code. Please check your code and try again.';
+    status.textContent = '✗ Please enter a code.';
+    return;
+  }
+  status.style.display = 'block';
+  status.style.color = 'var(--text2)';
+  status.textContent = 'Checking code...';
+  try {
+    const res = await fetch('/api/check-military', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code })
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      state.discount = data.label;
+      state.discountPct = data.discount;
+      status.className = 'discount-status success';
+      status.textContent = '✓ Military discount applied — 10% off your order.';
+      updateOrderSummary();
+    } else {
+      status.className = 'discount-status error';
+      status.textContent = '✗ ' + (data.error || 'Invalid code.');
+    }
+  } catch {
+    status.className = 'discount-status error';
+    status.textContent = '✗ Network error. Please try again.';
   }
 }
 
@@ -552,7 +588,7 @@ function generateTicketId() {
   return 'DC8-' + a + '-' + b;
 }
 
-function submitOrder() {
+async function submitOrder() {
   const alertEl = document.getElementById('details-alert');
   alertEl.innerHTML = '';
 
@@ -581,7 +617,6 @@ function submitOrder() {
 
   state.attendees = attendees;
 
-  // Save to localStorage (Phase 2 will POST to API)
   const order = {
     id: generateTicketId(),
     timestamp: new Date().toISOString(),
@@ -593,13 +628,35 @@ function submitOrder() {
     discountPct: state.discountPct,
     total: getTierData().price * state.qty * (1 - state.discountPct)
   };
-  const existing = JSON.parse(localStorage.getItem('dc8_orders') || '[]');
-  existing.push(order);
-  localStorage.setItem('dc8_orders', JSON.stringify(existing));
 
-  renderConfirmation(order);
-  // Small delay to ensure DOM is ready
-  setTimeout(() => goToStep(4), 50);
+  // Show loading state
+  const btn = document.getElementById('btn-details-next');
+  const origText = btn.textContent;
+  btn.textContent = 'PROCESSING...';
+  btn.disabled = true;
+
+  try {
+    const response = await fetch('/api/submit-order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order, attendees: state.attendees })
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || 'Order failed');
+    }
+
+    renderConfirmation(order);
+    setTimeout(() => goToStep(4), 50);
+
+  } catch (err) {
+    console.error('Order error:', err);
+    alertEl.innerHTML = '<div class="alert error">Something went wrong. Please try again or contact support.</div>';
+    btn.textContent = origText;
+    btn.disabled = false;
+  }
 }
 
 // ══════════════════════════════════════════
@@ -629,6 +686,28 @@ document.addEventListener('DOMContentLoaded', () => {
   heroEl.style.display = 'block';
   document.querySelector('.content').style.display = 'none';
   document.getElementById('progress-bar').style.display = 'none';
+  // Handle redirect back from student verification
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('discount') === 'student' && params.get('verified_email')) {
+    state.discount = 'Student Discount (10%)';
+    state.discountPct = 0.10;
+    // Clear URL params without reload
+    window.history.replaceState({}, '', window.location.pathname);
+    // Show notification
+    const note = document.createElement('div');
+    note.style.cssText = 'position:fixed;top:80px;right:20px;background:#2B5BE8;color:#fff;padding:12px 20px;border-radius:10px;font-size:14px;font-weight:500;z-index:999;';
+    note.textContent = '✓ Student discount verified — 10% off applied!';
+    document.body.appendChild(note);
+    setTimeout(() => note.remove(), 4000);
+  }
+  if (params.get('error') === 'expired') {
+    const note = document.createElement('div');
+    note.style.cssText = 'position:fixed;top:80px;right:20px;background:#ff4444;color:#fff;padding:12px 20px;border-radius:10px;font-size:14px;font-weight:500;z-index:999;';
+    note.textContent = '✗ Verification link expired. Please try again.';
+    document.body.appendChild(note);
+    setTimeout(() => note.remove(), 5000);
+  }
+
 
   // Button is now hardcoded in HTML
 });
