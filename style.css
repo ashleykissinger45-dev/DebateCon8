@@ -324,6 +324,17 @@ body {
   flex-shrink: 0;
   margin-top: 2px;
 }
+.tier-ga .tier-perks-list li::before {
+  color: #6b7280;
+}
+.tier-card.recommended .tier-perks-list li::before,
+.tier-card.recommended.selected .tier-perks-list li::before {
+  color: var(--green);
+}
+.tier-ultimate .tier-perks-list li::before,
+.tier-ultimate.selected .tier-perks-list li::before {
+  color: #d4a017;
+}
 .tier-divider {
   height: 1px;
   background: var(--border);
